@@ -73,7 +73,7 @@
             </div>
 
         <h2 id="workflow-list-header">所有流程列表</h2>
-        <div id="loading">載入中，請稍候... (此為模擬數據)</div>
+        <div id="loading">載入中，請稍候... (正在呼叫 Cloudflare Worker...)</div>
         <table id="workflow-table" class="workflow-table" style="display: none;">
             <thead>
                 <tr>
@@ -91,11 +91,14 @@
     </div>
 
     <script>
-        // 🚨【資安提醒】: 這是前端 JavaScript。
-        // 在實際應用中，您**絕對不能**將 n8n API Key 放在這裡。
-        // 以下的 `fetchDataFromBackend` 函數是**模擬**向您安全的後端代理服務發出請求。
+        
+        // 🚨 替換處 A：請替換為你部署成功後 Cloudflare 給你的 Worker 網址 🚨
+        const WORKER_BASE_URL = 'https://n8nproxytop10.workers.dev'; 
+        // 範例: 'https://n8n-proxy-worker-monetamarkets.workers.dev'
+
 
         // 預設的 Tag 數據 (名稱: ID)
+        // 🚨 替換處 B：請確認這些 ID 與你在 n8n 中的實際 Tag ID 一致 🚨
         const TAG_MAP = {
             'andy': 'FJBgIoARPYOnC7Qn',
             'peggy': 'kDYrLahBIPajtx3N',
@@ -106,108 +109,33 @@
         let allWorkflows = [];
         let allExecutions = [];
 
-        // --- 模擬後端 API 呼叫 ---
+        // --- 核心 API 呼叫函式：實際呼叫 Cloudflare Worker ---
         /**
-         * 模擬呼叫後端代理服務來獲取數據。
-         * 在實際環境中，您會呼叫自己的安全後端 URL，
-         * 後端再使用 n8n API Key 向 n8n 實例請求數據。
-         * @param {string} endpoint - 模擬的 n8n API 路徑（例如: '/workflows'）
+         * 呼叫 Cloudflare Worker 代理服務來獲取數據。
+         * @param {string} endpoint - n8n API 路徑（例如: '/workflows' 或 '/executions'）
          * @param {object} params - 查詢參數
-         * @returns {Promise<object>} - 模擬的 API 回應數據
+         * @returns {Promise<object>} - API 回應數據
          */
         async function fetchDataFromBackend(endpoint, params = {}) {
-            // 在實際應用中，這裡應該是:
-            // const url = `/your-backend-proxy${endpoint}?${new URLSearchParams(params)}`;
-            // const response = await fetch(url);
-            // return response.json();
-
-            // 📢 這裡使用模擬數據：
-            const MOCK_DATA = generateMockData();
-            await new Promise(resolve => setTimeout(resolve, 800)); // 模擬網路延遲
-
-            if (endpoint.startsWith('/workflows')) {
-                let data = MOCK_DATA.workflows;
-                // 模擬 Tag 篩選
-                if (params.tags) {
-                    const tagId = TAG_MAP[params.tags.toLowerCase()];
-                    data = data.filter(w => w.tags.some(t => t.id === tagId));
-                }
-                // 模擬啟用/停用篩選
-                if (params.active !== undefined) {
-                    const isActive = params.active === 'true';
-                    data = data.filter(w => w.active === isActive);
-                }
-                return { data: data };
-            } else if (endpoint.startsWith('/executions')) {
-                let data = MOCK_DATA.executions;
-                // 模擬狀態篩選
-                if (params.status) {
-                    data = data.filter(e => e.status === params.status);
-                }
-                // 模擬 Workflow 篩選
-                if (params.workflowId) {
-                    const id = parseInt(params.workflowId);
-                    data = data.filter(e => e.workflowId === id);
-                }
-                // 模擬只返回最新的執行 (最相關的數據)
-                data.sort((a, b) => new Date(b.stoppedAt) - new Date(a.stoppedAt));
-                return { data: data };
-            }
-
-            return {};
-        }
-        // --- 模擬數據生成函式 (僅用於前端展示) ---
-        function generateMockData() {
-            const statuses = ['success', 'error', 'running'];
-            const names = ['報表自動化', '每日資料同步', '客戶通知', '系統監控', '排程備份'];
-            const workflows = [];
-            const executions = [];
-
-            // 產生流程 (workflows)
-            let workflowId = 1000;
-            for (const [name, id] of Object.entries(TAG_MAP)) {
-                for (let i = 0; i < 3; i++) {
-                    workflows.push({
-                        id: workflowId,
-                        name: `${name}'s ${names[i]}`,
-                        active: Math.random() > 0.2,
-                        tags: [{ id: id, name: name }],
-                        lastExecutionStatus: Math.random() < 0.8 ? 'success' : 'error' // 模擬上次執行狀態
-                    });
-                    workflowId++;
-                }
-            }
-            // 產生額外的無 Tag 流程
-            for (let i = 0; i < 3; i++) {
-                workflows.push({
-                    id: workflowId,
-                    name: names[i + 2],
-                    active: Math.random() > 0.5,
-                    tags: [],
-                    lastExecutionStatus: Math.random() < 0.7 ? 'success' : 'running'
-                });
-                workflowId++;
+            // 構造完整的 Worker URL： WORKER_BASE_URL + /workflows + ?status=error
+            const url = WORKER_BASE_URL + endpoint + '?' + new URLSearchParams(params);
+            
+            console.log(`Fetching from: ${url}`);
+            
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                // 如果 Worker 返回錯誤（例如 403 Forbidden 或 500 Server Error）
+                console.error(`Worker Response Error: ${response.status} ${response.statusText}`);
+                const errorText = await response.text();
+                console.error("Worker Error Detail:", errorText);
+                throw new Error(`無法從 Worker 獲取數據。請檢查 Worker 網址和 CORS 設定 (${response.status})`);
             }
             
-            // 產生執行記錄 (executions)
-            for (let id = 1; id <= 100; id++) {
-                const randomWorkflow = workflows[Math.floor(Math.random() * workflows.length)];
-                const status = statuses[Math.floor(Math.random() * statuses.length)];
-                const stoppedAt = new Date(Date.now() - Math.floor(Math.random() * 24 * 3600 * 1000));
-                const startedAt = new Date(stoppedAt - 10000);
-
-                executions.push({
-                    id: id,
-                    workflowId: randomWorkflow.id,
-                    status: status,
-                    startedAt: startedAt.toISOString(),
-                    stoppedAt: status === 'running' ? null : stoppedAt.toISOString()
-                });
-            }
-
-            return { workflows, executions };
+            return response.json();
         }
-        // --- 核心邏輯函式 ---
+        
+        // **注意：所有模擬數據生成函式已被移除，以確保獲取的是真實數據。**
 
         /**
          * 根據 Tag 數據計算健康度指標 (成功率, 錯誤數)
@@ -218,12 +146,13 @@
             for (const [userName, tagId] of Object.entries(TAG_MAP)) {
                 // 1. 篩選出該使用者 (Tag) 的所有流程 ID
                 const userWorkflowIds = workflows
-                    .filter(w => w.tags.some(t => t.id === tagId))
+                    // 檢查 workflow.tags 陣列中是否有任一 tag 的 id 等於我們目標的 tagId
+                    .filter(w => w.tags && w.tags.some(t => t.id === tagId))
                     .map(w => w.id);
 
                 // 2. 篩選出這些流程的所有執行記錄
                 const userExecutions = executions.filter(e => userWorkflowIds.includes(e.workflowId));
-
+                
                 // 3. 執行分析
                 const totalRuns = userExecutions.length;
                 const successRuns = userExecutions.filter(e => e.status === 'success').length;
@@ -251,10 +180,10 @@
             dashboardEl.innerHTML = '';
 
             for (const [userName, data] of Object.entries(healthData)) {
-                const total = data.totalRuns;
-                const successWidth = total > 0 ? (data.successRuns / total) * 100 : 0;
-                const errorWidth = total > 0 ? (data.errorRuns / total) * 100 : 0;
-                const runningWidth = total > 0 ? (data.runningRuns / total) * 100 : 0;
+                const total = data.totalRuns || 1; // 避免除以零
+                const successWidth = (data.successRuns / total) * 100;
+                const errorWidth = (data.errorRuns / total) * 100;
+                const runningWidth = (data.runningRuns / total) * 100;
                 
                 dashboardEl.innerHTML += `
                     <div class="health-card">
@@ -288,7 +217,7 @@
             // 1. Tag 篩選
             if (tag && tag !== 'all') {
                 const tagId = TAG_MAP[tag];
-                filteredWorkflows = filteredWorkflows.filter(w => w.tags.some(t => t.id === tagId));
+                filteredWorkflows = filteredWorkflows.filter(w => w.tags && w.tags.some(t => t.id === tagId));
                 document.getElementById('workflow-list-header').textContent = `${tag} 的流程列表`;
             } else {
                 document.getElementById('workflow-list-header').textContent = `所有流程列表`;
@@ -300,10 +229,15 @@
                 filteredWorkflows = filteredWorkflows.filter(w => w.active === isActive);
             }
 
-            // 3. 狀態篩選 (注意：這需要在後端呼叫 `/executions` 來過濾)
-            // 在此模擬中，我們假設 `lastExecutionStatus` 可以被篩選
+            // 3. 狀態篩選 (注意：我們使用 lastExecutionStatus 作為篩選基礎，這可能不夠精確)
             if (status !== '') {
-                filteredWorkflows = filteredWorkflows.filter(w => w.lastExecutionStatus === status);
+                // 我們需要一個有效的方法來取得每個流程的最新狀態
+                filteredWorkflows = filteredWorkflows.filter(workflow => {
+                    const latestExecution = allExecutions
+                        .filter(e => e.workflowId === workflow.id)
+                        .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0];
+                    return latestExecution && latestExecution.status === status;
+                });
             }
 
 
@@ -313,34 +247,40 @@
             }
 
             filteredWorkflows.forEach(workflow => {
-                // 模擬計算成功率和上次執行時間 (實際應從 executions 數據計算)
+                // 找到該流程的最新執行記錄
                 const workflowExecutions = allExecutions.filter(e => e.workflowId === workflow.id);
+                
+                // 排序以取得最新記錄
+                workflowExecutions.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+                
                 const totalRuns = workflowExecutions.length;
                 const successRuns = workflowExecutions.filter(e => e.status === 'success').length;
                 const successRate = totalRuns > 0 ? (successRuns / totalRuns * 100).toFixed(1) : 'N/A';
                 
-                const lastRun = workflowExecutions[0]; // 模擬已排序的最新執行
+                const lastRun = workflowExecutions[0]; 
+                const lastRunStatus = lastRun ? lastRun.status : 'N/A';
                 const lastRunTime = lastRun ? new Date(lastRun.startedAt).toLocaleString() : '無記錄';
                 
                 const statusClass = {
                     'success': 'badge-success',
                     'error': 'badge-error',
                     'running': 'badge-running',
+                    'waiting': 'badge-running', // Waiting 也視為正在處理中
                     'N/A': 'badge-inactive'
-                }[workflow.lastExecutionStatus || 'N/A'];
+                }[lastRunStatus || 'N/A'];
 
                 const activeBadge = workflow.active 
                     ? `<span class="status-badge badge-active">啟用中</span>` 
                     : `<span class="status-badge badge-inactive">已停用</span>`;
 
-                const tagsDisplay = workflow.tags.map(t => t.name).join(', ') || '無';
+                const tagsDisplay = workflow.tags ? workflow.tags.map(t => t.name).join(', ') : '無';
 
                 tableBody.innerHTML += `
                     <tr>
                         <td>${workflow.name}</td>
                         <td>${tagsDisplay}</td>
                         <td>${activeBadge}</td>
-                        <td><span class="status-badge ${statusClass}">${workflow.lastExecutionStatus || 'N/A'}</span></td>
+                        <td><span class="status-badge ${statusClass}">${lastRunStatus}</span></td>
                         <td>${successRate}%</td>
                         <td>${lastRunTime}</td>
                     </tr>
@@ -384,14 +324,21 @@
          */
         async function initDashboard() {
             try {
-                // 1. 取得所有流程和執行記錄 (模擬後端多個 API 呼叫)
+                // 1. 取得所有流程和執行記錄 
                 document.getElementById('loading').style.display = 'block';
                 
+                // 呼叫 Worker 取得所有 Workflows
                 const workflowsResponse = await fetchDataFromBackend('/workflows');
                 allWorkflows = workflowsResponse.data || [];
                 
-                const executionsResponse = await fetchDataFromBackend('/executions');
+                // 呼叫 Worker 取得所有 Executions
+                // 注意：如果您的執行記錄非常多，這裡可能需要分頁處理
+                const executionsResponse = await fetchDataFromBackend('/executions?includeData=false&limit=250');
                 allExecutions = executionsResponse.data || [];
+                
+                // 由於我們需要依據執行時間來排序和計算，先在本地排序一次，確保最新的執行在最前面
+                allExecutions.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+
 
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('workflow-table').style.display = 'table';
@@ -422,7 +369,7 @@
 
             } catch (error) {
                 console.error("初始化儀表板失敗:", error);
-                document.getElementById('loading').textContent = '載入數據失敗。請檢查後端服務和 API Key 配置。';
+                document.getElementById('loading').textContent = `載入數據失敗: ${error.message}。請檢查 Worker 網址和 n8n 實例狀態。`;
             }
         }
 
