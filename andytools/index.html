@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>n8n 流程健康度儀表板</title>
+    <style>
+        /* 基礎樣式 */
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        
+        /* Tag 篩選器樣式 */
+        .filter-section { background-color: #ecf0f1; padding: 15px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .tag-button { background-color: #bdc3c7; color: white; border: none; padding: 8px 15px; margin: 5px; border-radius: 20px; cursor: pointer; transition: background-color 0.3s; font-weight: bold; }
+        .tag-button:hover { background-color: #95a5a6; }
+        .tag-button.active { background-color: #3498db; }
+
+        /* 健康度卡片樣式 */
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .health-card { background-color: white; border-radius: 8px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); transition: transform 0.3s; }
+        .health-card:hover { transform: translateY(-5px); }
+        .card-header { font-size: 1.5em; margin-bottom: 10px; color: #2c3e50; }
+        .card-value { font-size: 2.5em; font-weight: bold; margin-bottom: 5px; }
+        .status-bar-container { background-color: #ecf0f1; border-radius: 4px; overflow: hidden; height: 15px; margin-top: 10px; }
+        .status-bar { height: 100%; float: left; transition: width 0.5s ease-in-out; }
+        
+        /* 狀態顏色 */
+        .success { background-color: #2ecc71; }
+        .error { background-color: #e74c3c; }
+        .running { background-color: #f39c12; }
+
+        /* 資訊表格 */
+        .workflow-table { width: 100%; border-collapse: collapse; margin-top: 20px; background-color: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .workflow-table th, .workflow-table td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #ddd; }
+        .workflow-table th { background-color: #34495e; color: white; font-weight: 600; }
+        .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+        .badge-success { background-color: #e8f8f5; color: #2ecc71; }
+        .badge-error { background-color: #fdedec; color: #e74c3c; }
+        .badge-running { background-color: #f9e79f; color: #f39c12; }
+        .badge-active { background-color: #d1f2eb; color: #2ecc71; }
+        .badge-inactive { background-color: #f4f6f7; color: #7f8c8d; }
+
+        /* 載入狀態 */
+        #loading { text-align: center; padding: 50px; font-size: 1.2em; color: #7f8c8d; }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>n8n 流程健康度儀表板</h1>
+
+        <div class="filter-section">
+            <p><strong>Tag 篩選:</strong></p>
+            <div id="tag-filters">
+                </div>
+            <p><strong>其他篩選:</strong></p>
+            <select id="status-filter">
+                <option value="">所有狀態</option>
+                <option value="error">僅錯誤</option>
+                <option value="running">運行中</option>
+                <option value="success">成功</option>
+            </select>
+            <select id="active-filter">
+                <option value="">所有流程</option>
+                <option value="true">僅啟用</option>
+                <option value="false">僅停用</option>
+            </select>
+        </div>
+
+        <h2>使用者流程健康度分析</h2>
+        <div id="health-dashboard" class="dashboard-grid">
+            </div>
+
+        <h2 id="workflow-list-header">所有流程列表</h2>
+        <div id="loading">載入中，請稍候... (正在呼叫 Cloudflare Worker...)</div>
+        <table id="workflow-table" class="workflow-table" style="display: none;">
+            <thead>
+                <tr>
+                    <th>流程名稱</th>
+                    <th>所屬 Tag</th>
+                    <th>啟用狀態</th>
+                    <th>上次執行狀態</th>
+                    <th>成功率 (總計)</th>
+                    <th>上次執行時間</th>
+                </tr>
+            </thead>
+            <tbody id="workflow-data">
+                </tbody>
+        </table>
+    </div>
+
+    <script>
+        
+        // 🚨 替換處 A：請替換為你部署成功後 Cloudflare 給你的 Worker 網址 🚨
+        const WORKER_BASE_URL = 'https://n8n-proxy-worker-andy.weiweiandy1999.workers.dev'; 
+        // 範例: 'https://n8n-proxy-worker-andy.weiweiandy1999.workers.dev'
+
+
+        // 預設的 Tag 數據 (名稱: ID)
+        // 🚨 替換處 B：請確認這些 ID 與你在 n8n 中的實際 Tag ID 一致 🚨
+        const TAG_MAP = {
+            'andy': 'FJBgIoARPYOnC7Qn',
+            'peggy': 'kDYrLahBIPajtx3N',
+            'alan': 'dRUR3H2kacyo6lAw'
+        };
+
+        let currentFilterTag = '';
+        let allWorkflows = [];
+        let allExecutions = [];
+
+        // --- 核心 API 呼叫函式：實際呼叫 Cloudflare Worker ---
+        /**
+         * 呼叫 Cloudflare Worker 代理服務來獲取數據。
+         * @param {string} endpoint - n8n API 路徑（例如: '/workflows' 或 '/executions'）
+         * @param {object} params - 查詢參數
+         * @returns {Promise<object>} - API 回應數據
+         */
+        async function fetchDataFromBackend(endpoint, params = {}) {
+            // 構造完整的 Worker URL： WORKER_BASE_URL + /workflows + ?status=error
+            const url = WORKER_BASE_URL + endpoint + '?' + new URLSearchParams(params);
+            
+            console.log(`Fetching from: ${url}`);
+            
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                // 如果 Worker 返回錯誤（例如 403 Forbidden 或 500 Server Error）
+                console.error(`Worker Response Error: ${response.status} ${response.statusText}`);
+                const errorText = await response.text();
+                console.error("Worker Error Detail:", errorText);
+                throw new Error(`無法從 Worker 獲取數據。請檢查 Worker 網址和 CORS 設定 (${response.status})`);
+            }
+            
+            return response.json();
+        }
+        
+        // **注意：所有模擬數據生成函式已被移除，以確保獲取的是真實數據。**
+
+        /**
+         * 根據 Tag 數據計算健康度指標 (成功率, 錯誤數)
+         */
+        function analyzeHealthByTag(workflows, executions) {
+            const results = {};
+
+            for (const [userName, tagId] of Object.entries(TAG_MAP)) {
+                // 1. 篩選出該使用者 (Tag) 的所有流程 ID
+                const userWorkflowIds = workflows
+                    // 檢查 workflow.tags 陣列中是否有任一 tag 的 id 等於我們目標的 tagId
+                    .filter(w => w.tags && w.tags.some(t => t.id === tagId))
+                    .map(w => w.id);
+
+                // 2. 篩選出這些流程的所有執行記錄
+                const userExecutions = executions.filter(e => userWorkflowIds.includes(e.workflowId));
+                
+                // 3. 執行分析
+                const totalRuns = userExecutions.length;
+                const successRuns = userExecutions.filter(e => e.status === 'success').length;
+                const errorRuns = userExecutions.filter(e => e.status === 'error').length;
+                const runningRuns = userExecutions.filter(e => e.status === 'running').length;
+                const successRate = totalRuns > 0 ? (successRuns / totalRuns) * 100 : 0;
+                
+                results[userName] = {
+                    totalWorkflows: userWorkflowIds.length,
+                    totalRuns,
+                    successRuns,
+                    errorRuns,
+                    runningRuns,
+                    successRate: successRate.toFixed(1)
+                };
+            }
+            return results;
+        }
+
+        /**
+         * 渲染健康度卡片
+         */
+        function renderHealthDashboard(healthData) {
+            const dashboardEl = document.getElementById('health-dashboard');
+            dashboardEl.innerHTML = '';
+
+            for (const [userName, data] of Object.entries(healthData)) {
+                const total = data.totalRuns || 1; // 避免除以零
+                const successWidth = (data.successRuns / total) * 100;
+                const errorWidth = (data.errorRuns / total) * 100;
+                const runningWidth = (data.runningRuns / total) * 100;
+                
+                dashboardEl.innerHTML += `
+                    <div class="health-card">
+                        <div class="card-header">${userName} 的流程概覽 (${data.totalWorkflows} 個流程)</div>
+                        <div class="card-value ${data.successRate < 80 ? 'error' : 'success'}">${data.successRate}%</div>
+                        <p>總執行次數: ${data.totalRuns}</p>
+                        <p>錯誤次數: <strong class="error">${data.errorRuns}</strong></p>
+                        <div class="status-bar-container">
+                            <div class="status-bar success" style="width: ${successWidth}%;"></div>
+                            <div class="status-bar error" style="width: ${errorWidth}%;"></div>
+                            <div class="status-bar running" style="width: ${runningWidth}%;"></div>
+                        </div>
+                        <small>綠色: 成功, 紅色: 錯誤, 黃色: 運行中</small>
+                    </div>
+                `;
+            }
+        }
+
+        /**
+         * 渲染流程列表
+         * @param {string} tag - 當前選中的 Tag 名稱
+         * @param {string} status - 當前選中的狀態篩選
+         * @param {string} active - 當前選中的啟用狀態篩選
+         */
+        function renderWorkflowList(tag = '', status = '', active = '') {
+            const tableBody = document.getElementById('workflow-data');
+            tableBody.innerHTML = '';
+
+            let filteredWorkflows = allWorkflows;
+
+            // 1. Tag 篩選
+            if (tag && tag !== 'all') {
+                const tagId = TAG_MAP[tag];
+                filteredWorkflows = filteredWorkflows.filter(w => w.tags && w.tags.some(t => t.id === tagId));
+                document.getElementById('workflow-list-header').textContent = `${tag} 的流程列表`;
+            } else {
+                document.getElementById('workflow-list-header').textContent = `所有流程列表`;
+            }
+
+            // 2. 啟用狀態篩選
+            if (active !== '') {
+                const isActive = active === 'true';
+                filteredWorkflows = filteredWorkflows.filter(w => w.active === isActive);
+            }
+
+            // 3. 狀態篩選 (注意：我們使用 lastExecutionStatus 作為篩選基礎，這可能不夠精確)
+            if (status !== '') {
+                // 我們需要一個有效的方法來取得每個流程的最新狀態
+                filteredWorkflows = filteredWorkflows.filter(workflow => {
+                    const latestExecution = allExecutions
+                        .filter(e => e.workflowId === workflow.id)
+                        .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0];
+                    return latestExecution && latestExecution.status === status;
+                });
+            }
+
+
+            if (filteredWorkflows.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center;">沒有符合篩選條件的流程數據。</td></tr>';
+                return;
+            }
+
+            filteredWorkflows.forEach(workflow => {
+                // 找到該流程的最新執行記錄
+                const workflowExecutions = allExecutions.filter(e => e.workflowId === workflow.id);
+                
+                // 排序以取得最新記錄
+                workflowExecutions.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+                
+                const totalRuns = workflowExecutions.length;
+                const successRuns = workflowExecutions.filter(e => e.status === 'success').length;
+                const successRate = totalRuns > 0 ? (successRuns / totalRuns * 100).toFixed(1) : 'N/A';
+                
+                const lastRun = workflowExecutions[0]; 
+                const lastRunStatus = lastRun ? lastRun.status : 'N/A';
+                const lastRunTime = lastRun ? new Date(lastRun.startedAt).toLocaleString() : '無記錄';
+                
+                const statusClass = {
+                    'success': 'badge-success',
+                    'error': 'badge-error',
+                    'running': 'badge-running',
+                    'waiting': 'badge-running', // Waiting 也視為正在處理中
+                    'N/A': 'badge-inactive'
+                }[lastRunStatus || 'N/A'];
+
+                const activeBadge = workflow.active 
+                    ? `<span class="status-badge badge-active">啟用中</span>` 
+                    : `<span class="status-badge badge-inactive">已停用</span>`;
+
+                const tagsDisplay = workflow.tags ? workflow.tags.map(t => t.name).join(', ') : '無';
+
+                tableBody.innerHTML += `
+                    <tr>
+                        <td>${workflow.name}</td>
+                        <td>${tagsDisplay}</td>
+                        <td>${activeBadge}</td>
+                        <td><span class="status-badge ${statusClass}">${lastRunStatus}</span></td>
+                        <td>${successRate}%</td>
+                        <td>${lastRunTime}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        /**
+         * 渲染 Tag 篩選按鈕
+         */
+        function renderTagFilters() {
+            const filterContainer = document.getElementById('tag-filters');
+            filterContainer.innerHTML = '';
+            
+            // 加入 "全部" 按鈕
+            filterContainer.innerHTML += `
+                <button class="tag-button active" data-tag-name="all">全部流程</button>
+            `;
+
+            // 加入每個使用者 Tag 按鈕
+            for (const name of Object.keys(TAG_MAP)) {
+                filterContainer.innerHTML += `
+                    <button class="tag-button" data-tag-name="${name}">${name}</button>
+                `;
+            }
+        }
+
+        /**
+         * 處理篩選器點擊事件 (Tag, 狀態, 啟用狀態)
+         */
+        function handleFilterChange() {
+            const statusFilter = document.getElementById('status-filter').value;
+            const activeFilter = document.getElementById('active-filter').value;
+            
+            // 重新渲染流程列表
+            renderWorkflowList(currentFilterTag, statusFilter, activeFilter);
+        }
+
+        /**
+         * 儀表板啟動函式
+         */
+        async function initDashboard() {
+            try {
+                // 1. 取得所有流程和執行記錄 
+                document.getElementById('loading').style.display = 'block';
+                
+                // 呼叫 Worker 取得所有 Workflows
+                const workflowsResponse = await fetchDataFromBackend('/workflows');
+                allWorkflows = workflowsResponse.data || [];
+                
+                // 呼叫 Worker 取得所有 Executions
+                // 注意：如果您的執行記錄非常多，這裡可能需要分頁處理
+                const executionsResponse = await fetchDataFromBackend('/executions?includeData=false&limit=250');
+                allExecutions = executionsResponse.data || [];
+                
+                // 由於我們需要依據執行時間來排序和計算，先在本地排序一次，確保最新的執行在最前面
+                allExecutions.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('workflow-table').style.display = 'table';
+
+                // 2. 根據 Tag 進行健康度分析
+                const healthData = analyzeHealthByTag(allWorkflows, allExecutions);
+                renderHealthDashboard(healthData);
+
+                // 3. 渲染 Tag 篩選器
+                renderTagFilters();
+                
+                // 4. 初始渲染流程列表
+                renderWorkflowList('all');
+
+                // 5. 綁定事件監聽器
+                document.querySelectorAll('#tag-filters .tag-button').forEach(button => {
+                    button.addEventListener('click', (e) => {
+                        // 更新 Tag 篩選狀態
+                        document.querySelectorAll('#tag-filters .tag-button').forEach(btn => btn.classList.remove('active'));
+                        e.target.classList.add('active');
+                        currentFilterTag = e.target.dataset.tagName === 'all' ? '' : e.target.dataset.tagName;
+                        handleFilterChange();
+                    });
+                });
+
+                document.getElementById('status-filter').addEventListener('change', handleFilterChange);
+                document.getElementById('active-filter').addEventListener('change', handleFilterChange);
+
+            } catch (error) {
+                console.error("初始化儀表板失敗:", error);
+                document.getElementById('loading').textContent = `載入數據失敗: ${error.message}。請檢查 Worker 網址和 n8n 實例狀態。`;
+            }
+        }
+
+        // 啟動儀表板
+        initDashboard();
+    </script>
+</body>
+</html>
